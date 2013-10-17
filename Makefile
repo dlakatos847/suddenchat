@@ -1,12 +1,12 @@
 CC=gcc
-SRC=src/main.c src/sec.c
+SRC=src/main.c src/console.c src/log.c
 OBJ=$(SRC:.c=.o)
-PRG=bin/suddenchat
+PRG=suddenchat
 
 all: $(PRG)
 
 $(OBJ): %.o: %.c
-	$(CC) -c -o $@ $<
+	$(CC) -ggdb -c -o $@ $<
 
 $(PRG): $(OBJ)
 	$(CC) $(OBJ) -o $(PRG)
