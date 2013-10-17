@@ -1,11 +1,12 @@
-SRC=src/main.c
-OBJ=bin/main.o
+CC=gcc
+SRC=src/main.c src/sec.c
+OBJ=$(SRC:.c=.o)
 PRG=bin/suddenchat
 
 all: $(PRG)
 
+$(OBJ): %.o: %.c
+	$(CC) -c -o $@ $<
+
 $(PRG): $(OBJ)
-	gcc -Wall $(OBJ) -o $(PRG)
-	
-$(OBJ): $(SRC)
-	gcc -Wall -c $(SRC) -o $(OBJ)
+	$(CC) $(OBJ) -o $(PRG)
