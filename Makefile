@@ -1,5 +1,5 @@
 CC=gcc
-SRC=src/main.c src/console.c src/log.c
+SRC=src/main.c src/console.c src/network.c
 OBJ=$(SRC:.c=.o)
 PRG=suddenchat
 
