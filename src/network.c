@@ -7,17 +7,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/types.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include "group.h"
 
+#define INET_ADDRSTRLEN 16
+
 int groupMembershipNo = 0;
-struct group groups[10];
+struct group groupMemberships[10];
 
 struct group * listMemberGroups() {
-	return groups;
+	return groupMemberships;
 }
 
 int getMaximumGroupsNo() {
-	return sizeof(groups) / sizeof(struct group);
+	return sizeof(groupMemberships) / sizeof(struct group);
 }
 
 int getMemberGroupsNo() {
@@ -26,9 +33,9 @@ int getMemberGroupsNo() {
 
 void joinGroup(char *groupName, char *password) {
 	// check the maximum group memberships
-	if (groupMembershipNo == sizeof(groups) / sizeof(struct group)) {
+	if (groupMembershipNo == sizeof(groupMemberships) / sizeof(struct group)) {
 		printf("You reached the maximum group membership number (%d).",
-				(int) (sizeof(groups) / sizeof(struct group)));
+				(int) (sizeof(groupMemberships) / sizeof(struct group)));
 		return;
 	}
 
@@ -36,22 +43,48 @@ void joinGroup(char *groupName, char *password) {
 	int i;
 	int alreadyMember = 0;
 	for (i = 0; i < groupMembershipNo; ++i) {
-		if (strcmp(groups[i].name, groupName) == 0) {
-			strcpy(groups[i].password, password);
+		if (strcmp(groupMemberships[i].name, groupName) == 0) {
+			strcpy(groupMemberships[i].password, password);
 			alreadyMember = 1;
 		}
 	}
 
 	// if not a member of the group, add them to it
 	if (alreadyMember == 0) {
-		strcpy(groups[groupMembershipNo].name, groupName);
-		strcpy(groups[groupMembershipNo].password, password);
+		strcpy(groupMemberships[groupMembershipNo].name, groupName);
+		strcpy(groupMemberships[groupMembershipNo].password, password);
 		groupMembershipNo++;
 	}
 }
 
 void discoverGroups() {
-	//TODO
+	//TODO contd.
+	struct ifaddrs *ifs;
+	struct ifaddrs *cif;
+
+	if (getifaddrs(&ifs) != 0) {
+		perror("getifaddrs");
+	}
+
+	//print broadcast addresses
+	char buf[INET_ADDRSTRLEN];
+	struct sockaddr_in *sin;
+	printf("Searching groups on interfaces with addresses (no loopback):\n");
+	for (cif = ifs; cif != NULL; cif = cif->ifa_next) {
+		//avoid loopback interfaces
+		if (strcmp(cif->ifa_name, "lo") == 0) {
+			continue;
+		}
+		if (cif->ifa_addr->sa_family == AF_INET) {
+			cif->ifa_flags = cif->ifa_flags | IFF_BROADCAST;
+			sin = (struct sockaddr_in *) cif->ifa_addr;
+			printf("* %s\n", inet_ntoa(sin->sin_addr));
+		}
+	}
+
+	//free memory
+	freeifaddrs(ifs);
+
 	return;
 }
 

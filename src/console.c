@@ -56,6 +56,9 @@ void showConsole() {
 		case 's':
 			listGroupMemberships();
 			break;
+		case 'd':
+			discoverGroups();
+			break;
 		default:
 			printf("Not valid input\n\n");
 			break;
@@ -69,6 +72,7 @@ void showOptions() {
 	printf("Please select from the following options!\n");
 	printf("j - join a group\n");
 	printf("s - show group memberships\n");
+	printf("d - discover groups\n");
 	printf("q - quit\n");
 }
 
