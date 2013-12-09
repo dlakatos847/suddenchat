@@ -4,17 +4,22 @@
  *  Created on: Dec 3, 2013
  *      Author: David Lakatos <david.lakatos.hu@gmail.com>
  */
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <sys/types.h>
+
+#include <arpa/inet.h>
+#include <asm-generic/socket.h>
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <arpa/inet.h>
 #include <netinet/in.h>
+#include <stdio.h>
+//#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+//#include <sys/types.h>
+
 #include "group.h"
 
 #define INET_ADDRSTRLEN 16
+#define BCAST_PORT 12345
 
 int groupMembershipNo = 0;
 struct group groupMemberships[10];
@@ -70,6 +75,17 @@ void discoverGroups() {
 	char buf[INET_ADDRSTRLEN];
 	struct sockaddr_in *sin;
 	printf("Searching groups on interfaces with addresses (no loopback):\n");
+
+	int bcastsocket;
+	if ((bcastsocket = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+		perror("discoverGroups bcastsocket");
+	}
+	int broadcastEnable = 1;
+	if (setsockopt(bcastsocket, SOL_SOCKET, SO_BROADCAST, &broadcastEnable,
+			sizeof(broadcastEnable)) < 0) {
+		perror("discoverGroups setsockopt");
+	}
+	struct sockaddr_in *socketaddress;
 	for (cif = ifs; cif != NULL; cif = cif->ifa_next) {
 		//avoid loopback interfaces
 		if (strcmp(cif->ifa_name, "lo") == 0) {
@@ -78,13 +94,19 @@ void discoverGroups() {
 		if (cif->ifa_addr->sa_family == AF_INET) {
 			cif->ifa_flags = cif->ifa_flags | IFF_BROADCAST;
 			sin = (struct sockaddr_in *) cif->ifa_addr;
-			printf("* %s\n", inet_ntoa(sin->sin_addr));
+			printf("* %s ", inet_ntoa(sin->sin_addr));
+
+			socketaddress = (struct sockaddr_in *) cif->ifa_ifu.ifu_broadaddr;
+			printf("with bcast address %s\n",
+					inet_ntoa(socketaddress->sin_addr));
+			socketaddress->sin_port = htons(12345);
+			sendto(bcastsocket, "SUDDENCHAT_DISCOVER_GROUPS",
+					strlen("SUDDENCHAT_DISCOVER_GROUPS"), 0,
+					(struct sockaddr *) socketaddress, sizeof(struct sockaddr));
 		}
 	}
-
 	//free memory
 	freeifaddrs(ifs);
-
 	return;
 }
 
