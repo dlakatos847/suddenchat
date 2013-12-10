@@ -4,21 +4,21 @@
  *  Created on: Okt 17, 2013
  *      Author: David Lakatos <david.lakatos.hu@gmail.com>
  */
+
 #include <stdio.h>
-#include <stdlib.h>
-#include <termios.h>	//termios, TCSANOW, ECHO, ICANON
-#include <unistd.h>		//STDIN_FILENO
+
 #include "network.h"
-#include "group.h"
+#include "sudden_types.h"
+
+extern int discoveredUsersNo;
+extern int discoveredGroupsNo;
+extern struct user discoveredUsers[MAX_DISCOVERED_USERS];
+extern struct group discoveredGroups[MAX_DISCOVERED_GROUPS];
 
 void showOptions();
 void showPrompt();
 void listGroupMemberships();
-//void disableBuffering();
-//void restoreConsoleSettings();
-
-//static struct termios oldt, newt;
-char input[100];
+void listCandidates();
 
 void showConsole() {
 	int running = 1;
@@ -27,12 +27,9 @@ void showConsole() {
 	char groupName[50];
 	char password[50];
 
-	//disableBuffering();
-	//setbuf(stdout,NULL);
-
 	while (running) {
 		fflush(stdin);
-		//printf("\x1b[2JTaking control of your console.");
+
 		showOptions();
 		showPrompt();
 		gets(choice);
@@ -53,11 +50,14 @@ void showConsole() {
 
 			joinGroup(groupName, password);
 			break;
-		case 's':
+		case 'g':
 			listGroupMemberships();
 			break;
 		case 'd':
-			discoverGroups();
+			discover();
+			break;
+		case 'l':
+			listCandidates();
 			break;
 		default:
 			printf("Not valid input\n\n");
@@ -71,8 +71,9 @@ void showConsole() {
 void showOptions() {
 	printf("Please select from the following options!\n");
 	printf("j - join a group\n");
-	printf("s - show group memberships\n");
-	printf("d - discover groups\n");
+	printf("g - show group memberships\n");
+	printf("l - list available users and groups\n");
+	printf("d - discover available user and group list\n");
 	printf("q - quit\n");
 }
 
@@ -91,24 +92,14 @@ void listGroupMemberships() {
 	}
 }
 
-//void disableBuffering() {
-//
-//	/*tcgetattr gets the parameters of the current terminal
-//	 STDIN_FILENO will tell tcgetattr that it should write the settings
-//	 of stdin to oldt*/
-//	tcgetattr( STDIN_FILENO, &oldt);
-//	/*now the settings will be copied*/
-//	newt = oldt;
-//
-//	/*ICANON normally takes care that one line at a time will be processed
-//	 that means it will return if it sees a "\n" or an EOF or an EOL*/
-//	newt.c_lflag &= ~(ICANON);
-//
-//	/*Those new settings will be set to STDIN
-//	 TCSANOW tells tcsetattr to change attributes immediately. */
-//	tcsetattr( STDIN_FILENO, TCSANOW, &newt);
-//}
-//
-//void restoreConsoleSettings() {
-//	tcsetattr( STDIN_FILENO, TCSANOW, &oldt);
-//}
+void listCandidates() {
+	int i;
+	printf("Users:\n");
+	for (i = 0; i < discoveredUsersNo; ++i) {
+		printf(" * %s\n", discoveredUsers[i].name);
+	}
+	printf("Groups:\n");
+	for (i = 0; i < discoveredGroupsNo; ++i) {
+		printf(" * %s\n", discoveredGroups[i].name);
+	}
+}

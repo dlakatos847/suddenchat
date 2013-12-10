@@ -5,112 +5,316 @@
  *      Author: David Lakatos <david.lakatos.hu@gmail.com>
  */
 
+#include "network.h"
+
 #include <arpa/inet.h>
 #include <asm-generic/socket.h>
 #include <ifaddrs.h>
-#include <net/if.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdio.h>
-//#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-//#include <sys/types.h>
 
-#include "group.h"
+#include "sudden_types.h"
 
-#define INET_ADDRSTRLEN 16
-#define BCAST_PORT 12345
+/*
+ * variables
+ */
+int associatedUsersNo = 0;
+int associatedGroupsNo = 0;
+struct user associatedUsers[MAX_DISCOVERED_USERS];
+struct group associatedGroups[MAX_DISCOVERED_GROUPS];
+int discoveredUsersNo = 0;
+int discoveredGroupsNo = 0;
+struct user discoveredUsers[MAX_DISCOVERED_USERS];
+struct group discoveredGroups[MAX_DISCOVERED_GROUPS];
+extern struct user myself;
 
-int groupMembershipNo = 0;
-struct group groupMemberships[10];
+/*
+ * function declarations
+ */
+void collectDiscoveryAnswers();
 
 struct group * listMemberGroups() {
-	return groupMemberships;
+	return associatedGroups;
 }
 
-int getMaximumGroupsNo() {
-	return sizeof(groupMemberships) / sizeof(struct group);
-}
+/*
+ * discover Suddenchat users and groups on network
+ */
+void discover() {
+	// interface linked list
+	struct ifaddrs *ifs;
+	// current interface
+	struct ifaddrs *cif;
+	// bcast enable bit
+	int broadcastEnable = 1;
+	// socket
+	int bcastSocket;
+	// socket address
+	struct sockaddr_in bcastSocketAddress;
 
-int getMemberGroupsNo() {
-	return groupMembershipNo;
-}
+	discoveredUsersNo = 0;
+	discoveredGroupsNo = 0;
 
-void joinGroup(char *groupName, char *password) {
-	// check the maximum group memberships
-	if (groupMembershipNo == sizeof(groupMemberships) / sizeof(struct group)) {
-		printf("You reached the maximum group membership number (%d).",
-				(int) (sizeof(groupMemberships) / sizeof(struct group)));
+	// *** initialization
+	// enumerate interfaces
+	if (getifaddrs(&ifs) != 0) {
+		perror("getifaddrs");
+		return;
+	}
+	// initialize socket
+	if ((bcastSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
+		perror("discoverGroups bcastsocket");
+		return;
+	}
+	if (setsockopt(bcastSocket, SOL_SOCKET, SO_BROADCAST, &broadcastEnable,
+			sizeof(broadcastEnable)) < 0) {
+		perror("discoverGroups setsockopt");
 		return;
 	}
 
-	// look up existing group membership
+	printf("Discovery message sent to the current interface "
+			"broadcast addresses (w/o loopback):\n");
+	for (cif = ifs; cif != NULL; cif = cif->ifa_next) {
+		// avoid loopback interfaces
+		if (strcmp(cif->ifa_name, "lo") == 0) {
+			continue;
+		}
+
+		// only IPv4
+		if (cif->ifa_addr->sa_family == AF_INET) {
+			// get socket address to broadcast
+			memcpy(&bcastSocketAddress,
+					(struct sockaddr_in *) cif->ifa_ifu.ifu_broadaddr,
+					sizeof(*(cif->ifa_ifu.ifu_broadaddr)));
+			// print interface's bcast address
+			printf("* %s\n", inet_ntoa(bcastSocketAddress.sin_addr));
+			// set hello port to BCAST_PORT
+			bcastSocketAddress.sin_port = htons(HELLO_REQ_PORT);
+			// send hello message
+			sendto(bcastSocket, DISCOVERY_REQ_MESSAGE,
+			DISCOVERY_REQ_LENGTH + 1, 0,
+					(struct sockaddr *) &bcastSocketAddress,
+					sizeof(bcastSocketAddress));
+		}
+	}
+	// free memory: linked list
+	freeifaddrs(ifs);
+}
+
+/*
+ * thread function; waits for the user and group name responses
+ */
+void collectDiscoveryAnswers() {
+	int serverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	// amount of bytes read
+	int readBytes;
+	struct sockaddr_in serverSocketAddress;
+	struct sockaddr_in clientSocketAddress;
+	int serverSocketAddressLength = sizeof(serverSocketAddress);
+	// receive group names to this buffer
+	char messageBuffer[MAX_NAME_LENGTH + 2];
+	// iteration variable
+	int i;
+	// name
+	char *name = (char*) messageBuffer + 1;
+
+	// check if the socket went wrong
+	if (serverSocket < 0) {
+		perror("collectGroups serverSocket");
+		pthread_exit(NULL);
+	}
+
+	// zero out the socket address structure
+	memset((char *) &serverSocketAddress, 0, sizeof(serverSocketAddress));
+
+	// initialize the socket address
+	serverSocketAddress.sin_family = AF_INET;
+	serverSocketAddress.sin_port = htons(HELLO_RSP_PORT);
+	serverSocketAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	//bind socket to port
+	if (bind(serverSocket, (struct sockaddr*) &serverSocketAddress,
+			sizeof(serverSocketAddress)) == -1) {
+		perror("bind");
+		pthread_exit(NULL);
+	}
+
+	// receive network communication
+	while (1) {
+		if ((readBytes = recvfrom(serverSocket, messageBuffer,
+				sizeof(messageBuffer), 0,
+				(struct sockaddr *) &clientSocketAddress,
+				&serverSocketAddressLength)) < 0) {
+			perror("collectDiscovery recvfrom");
+			continue;
+		}
+
+		// it's a user
+		if (messageBuffer[0] == 'U') {
+
+			// check discovered user or group for duplicates
+			int j, isNew = 1;
+			for (j = 0; i < discoveredUsersNo; ++i) {
+				if (strcmp(discoveredGroups[i].name, name) == 0) {
+					isNew = 0;
+					break;
+				}
+			}
+
+			if (isNew) {
+				strcpy(discoveredUsers[discoveredUsersNo].name, name);
+				discoveredUsersNo++;
+			}
+		}
+		// it's a group
+		else if (messageBuffer[0] == 'G') {
+			// check discovered user or group for duplicates
+			int j, isNew = 1;
+			for (j = 0; i < discoveredGroupsNo; ++i) {
+				if (strcmp(discoveredGroups[i].name, name) == 0) {
+					isNew = 0;
+					break;
+				}
+			}
+
+			if (isNew) {
+				strcpy(discoveredGroups[discoveredGroupsNo].name, name);
+				discoveredGroupsNo++;
+			}
+		}
+		// it's ... well, something we don't care about
+		else {
+
+		}
+	}
+}
+
+void answerDiscoveryRequests() {
+	int serverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	// amount of bytes read
+	int readBytes;
+	struct sockaddr_in serverSocketAddress;
+	struct sockaddr_in clientSocketAddress;
+	socklen_t clientSocketAddressSize = sizeof(clientSocketAddress);
+	int serverSocketAddressLength = sizeof(serverSocketAddress);
+	// receive group names to this buffer
+	char messageBuffer[DISCOVERY_REQ_LENGTH + 1];
+	// iteration variable
+	int i;
+
+	// check if the socket went wrong
+	if (serverSocket < 0) {
+		perror("collectGroups serverSocket");
+		pthread_exit(NULL);
+	}
+
+	// zero out the socket address structure
+	memset((char *) &serverSocketAddress, 0, sizeof(serverSocketAddress));
+
+	// initialize the socket address
+	serverSocketAddress.sin_family = AF_INET;
+	serverSocketAddress.sin_port = htons(HELLO_REQ_PORT);
+	serverSocketAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	//bind socket to port
+	if (bind(serverSocket, (struct sockaddr*) &serverSocketAddress,
+			sizeof(serverSocketAddress)) == -1) {
+		perror("bind");
+		pthread_exit(NULL);
+	}
+
+	// answer discovery requests
+	while (1) {
+		if ((readBytes = recvfrom(serverSocket, messageBuffer,
+				sizeof(messageBuffer), 0,
+				(struct sockaddr *) &clientSocketAddress,
+				&serverSocketAddressLength)) < 0) {
+			perror("collectDiscovery recvfrom");
+			continue;
+		}
+
+		char* answer = strcat("U", myself.name);
+
+		// it's a discovery request
+		if (strcmp(messageBuffer, DISCOVERY_REQ_MESSAGE) == 0) {
+			sendto(serverSocket, answer,
+					sizeof(messageBuffer), 0,
+					(struct sockaddr*) &clientSocketAddress,
+					clientSocketAddressSize);
+		}
+	}
+}
+
+int getMaximumGroupsNo() {
+	return sizeof(associatedGroups) / sizeof(struct group);
+}
+
+int getMemberGroupsNo() {
+	return associatedGroupsNo;
+}
+
+void joinGroup(char *groupName, char *password) {
+// check the maximum group memberships
+	if (associatedGroupsNo == sizeof(associatedGroups) / sizeof(struct group)) {
+		printf("You reached the maximum group membership number (%d).",
+				(int) (sizeof(associatedGroups) / sizeof(struct group)));
+		return;
+	}
+
+// look up existing group membership
 	int i;
 	int alreadyMember = 0;
-	for (i = 0; i < groupMembershipNo; ++i) {
-		if (strcmp(groupMemberships[i].name, groupName) == 0) {
-			strcpy(groupMemberships[i].password, password);
+	for (i = 0; i < associatedGroupsNo; ++i) {
+		if (strcmp(associatedGroups[i].name, groupName) == 0) {
+			strcpy(associatedGroups[i].password, password);
 			alreadyMember = 1;
 		}
 	}
 
-	// if not a member of the group, add them to it
+// if not a member of the group, add them to it
 	if (alreadyMember == 0) {
-		strcpy(groupMemberships[groupMembershipNo].name, groupName);
-		strcpy(groupMemberships[groupMembershipNo].password, password);
-		groupMembershipNo++;
+		strcpy(associatedGroups[associatedGroupsNo].name, groupName);
+		strcpy(associatedGroups[associatedGroupsNo].password, password);
+		associatedGroupsNo++;
 	}
 }
 
-void discoverGroups() {
-	//TODO contd.
-	struct ifaddrs *ifs;
-	struct ifaddrs *cif;
+/*
+ * send a message to the user
+ */
+void sendMessageToPerson(char *message, int messageLength, char *username) {
+// the socket
+	int senderSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+// the socket address
+	struct sockaddr_in senderSocketAddress;
 
-	if (getifaddrs(&ifs) != 0) {
-		perror("getifaddrs");
+//TODO
+	char *ip;
+
+// quit if the socket has problems
+	if (senderSocket < 0) {
+		perror("sendMessageToPerson socket");
+		return;
 	}
 
-	//print broadcast addresses
-	char buf[INET_ADDRSTRLEN];
-	struct sockaddr_in *sin;
-	printf("Searching groups on interfaces with addresses (no loopback):\n");
+//set socket address
+	senderSocketAddress.sin_family = AF_INET;
+	senderSocketAddress.sin_port = htons(MESSAGE_PORT);
+	if (inet_aton(ip, &senderSocketAddress.sin_addr) == 0) {
+		perror("sendMessageToPerson inet_aton");
+		return;
+	}
 
-	int bcastsocket;
-	if ((bcastsocket = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-		perror("discoverGroups bcastsocket");
-	}
-	int broadcastEnable = 1;
-	if (setsockopt(bcastsocket, SOL_SOCKET, SO_BROADCAST, &broadcastEnable,
-			sizeof(broadcastEnable)) < 0) {
-		perror("discoverGroups setsockopt");
-	}
-	struct sockaddr_in *socketaddress;
-	for (cif = ifs; cif != NULL; cif = cif->ifa_next) {
-		//avoid loopback interfaces
-		if (strcmp(cif->ifa_name, "lo") == 0) {
-			continue;
-		}
-		if (cif->ifa_addr->sa_family == AF_INET) {
-			cif->ifa_flags = cif->ifa_flags | IFF_BROADCAST;
-			sin = (struct sockaddr_in *) cif->ifa_addr;
-			printf("* %s ", inet_ntoa(sin->sin_addr));
-
-			socketaddress = (struct sockaddr_in *) cif->ifa_ifu.ifu_broadaddr;
-			printf("with bcast address %s\n",
-					inet_ntoa(socketaddress->sin_addr));
-			socketaddress->sin_port = htons(12345);
-			sendto(bcastsocket, "SUDDENCHAT_DISCOVER_GROUPS",
-					strlen("SUDDENCHAT_DISCOVER_GROUPS"), 0,
-					(struct sockaddr *) socketaddress, sizeof(struct sockaddr));
-		}
-	}
-	//free memory
-	freeifaddrs(ifs);
-	return;
+// send the message
+	sendto(senderSocket, message, messageLength, 0,
+			(struct sockaddr*) &senderSocketAddress,
+			sizeof(senderSocketAddress));
 }
 
-void sendMessage(char *message, char *groupName) {
-	//TODO
+//TODO
+void sendMessageToGroup(char *message, char *groupName) {
 	return;
 }

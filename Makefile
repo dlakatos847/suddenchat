@@ -1,5 +1,5 @@
 CC=gcc
-SRC=src/main.c src/console.c src/network.c
+SRC=src/main.c src/console.c src/network.c src/cypher.c
 OBJ=$(SRC:.c=.o)
 PRG=suddenchat
 
@@ -9,4 +9,4 @@ $(OBJ): %.o: %.c
 	$(CC) -ggdb -c -o $@ $<
 
 $(PRG): $(OBJ)
-	$(CC) $(OBJ) -o $(PRG)
+	$(CC) -pthread $(OBJ) -o $(PRG)
