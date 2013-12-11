@@ -22,6 +22,8 @@
 #define DISCOVERY_REQ_MESSAGE "SUDDENCHAT_DISCOVERY_REQ"
 
 void collectDiscoveryAnswers();
+void answerDiscoveryRequests();
+void discover();
 void joinGroup(char *groupName, char *password);
 void sendMessageToGroup(char *message, char *group);
 int getMaximumGroupsNo();

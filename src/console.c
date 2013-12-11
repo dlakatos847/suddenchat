@@ -14,6 +14,7 @@ extern int discoveredUsersNo;
 extern int discoveredGroupsNo;
 extern struct user discoveredUsers[MAX_DISCOVERED_USERS];
 extern struct group discoveredGroups[MAX_DISCOVERED_GROUPS];
+extern struct user myself;
 
 void showOptions();
 void showPrompt();
@@ -53,9 +54,6 @@ void showConsole() {
 		case 'g':
 			listGroupMemberships();
 			break;
-		case 'd':
-			discover();
-			break;
 		case 'l':
 			listCandidates();
 			break;
@@ -73,7 +71,6 @@ void showOptions() {
 	printf("j - join a group\n");
 	printf("g - show group memberships\n");
 	printf("l - list available users and groups\n");
-	printf("d - discover available user and group list\n");
 	printf("q - quit\n");
 }
 
@@ -96,10 +93,14 @@ void listCandidates() {
 	int i;
 	printf("Users:\n");
 	for (i = 0; i < discoveredUsersNo; ++i) {
-		printf(" * %s\n", discoveredUsers[i].name);
+		printf("[%2d] %s ", i, discoveredUsers[i].name);
+		if (strcmp(discoveredUsers[i].name, myself.name) == 0) {
+			printf("[me] ");
+		}
+		printf("- %s\n",discoveredUsers[i].ip);
 	}
 	printf("Groups:\n");
 	for (i = 0; i < discoveredGroupsNo; ++i) {
-		printf(" * %s\n", discoveredGroups[i].name);
+		printf("[%2d] %s\n", i, discoveredGroups[i].name);
 	}
 }

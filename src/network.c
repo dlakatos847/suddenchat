@@ -75,30 +75,29 @@ void discover() {
 		return;
 	}
 
-	printf("Discovery message sent to the current interface "
-			"broadcast addresses (w/o loopback):\n");
-	for (cif = ifs; cif != NULL; cif = cif->ifa_next) {
-		// avoid loopback interfaces
-		if (strcmp(cif->ifa_name, "lo") == 0) {
-			continue;
-		}
+	while (1) {
+		for (cif = ifs; cif != NULL; cif = cif->ifa_next) {
+			// avoid loopback interfaces
+			if (strcmp(cif->ifa_name, "lo") == 0) {
+				continue;
+			}
 
-		// only IPv4
-		if (cif->ifa_addr->sa_family == AF_INET) {
-			// get socket address to broadcast
-			memcpy(&bcastSocketAddress,
-					(struct sockaddr_in *) cif->ifa_ifu.ifu_broadaddr,
-					sizeof(*(cif->ifa_ifu.ifu_broadaddr)));
-			// print interface's bcast address
-			printf("* %s\n", inet_ntoa(bcastSocketAddress.sin_addr));
-			// set hello port to BCAST_PORT
-			bcastSocketAddress.sin_port = htons(HELLO_REQ_PORT);
-			// send hello message
-			sendto(bcastSocket, DISCOVERY_REQ_MESSAGE,
-			DISCOVERY_REQ_LENGTH + 1, 0,
-					(struct sockaddr *) &bcastSocketAddress,
-					sizeof(bcastSocketAddress));
+			// only IPv4
+			if (cif->ifa_addr->sa_family == AF_INET) {
+				// get socket address to broadcast
+				memcpy(&bcastSocketAddress,
+						(struct sockaddr_in *) cif->ifa_ifu.ifu_broadaddr,
+						sizeof(*(cif->ifa_ifu.ifu_broadaddr)));
+				// set hello port to BCAST_PORT
+				bcastSocketAddress.sin_port = htons(HELLO_REQ_PORT);
+				// send hello message
+				sendto(bcastSocket, DISCOVERY_REQ_MESSAGE,
+				DISCOVERY_REQ_LENGTH + 1, 0,
+						(struct sockaddr *) &bcastSocketAddress,
+						sizeof(bcastSocketAddress));
+			}
 		}
+		sleep(1);
 	}
 	// free memory: linked list
 	freeifaddrs(ifs);
@@ -117,7 +116,7 @@ void collectDiscoveryAnswers() {
 	// receive group names to this buffer
 	char messageBuffer[MAX_NAME_LENGTH + 2];
 	// iteration variable
-	int i;
+	int i, isNew;
 	// name
 	char *name = (char*) messageBuffer + 1;
 
@@ -154,11 +153,10 @@ void collectDiscoveryAnswers() {
 
 		// it's a user
 		if (messageBuffer[0] == 'U') {
-
 			// check discovered user or group for duplicates
-			int j, isNew = 1;
-			for (j = 0; i < discoveredUsersNo; ++i) {
-				if (strcmp(discoveredGroups[i].name, name) == 0) {
+			isNew = 1;
+			for (i = 0; i < discoveredUsersNo; ++i) {
+				if (strcmp(discoveredUsers[i].name, name) == 0) {
 					isNew = 0;
 					break;
 				}
@@ -166,14 +164,16 @@ void collectDiscoveryAnswers() {
 
 			if (isNew) {
 				strcpy(discoveredUsers[discoveredUsersNo].name, name);
+				inet_ntop(AF_INET, &clientSocketAddress.sin_addr.s_addr,
+						discoveredUsers[discoveredUsersNo].ip, IP_LENGTH);
 				discoveredUsersNo++;
 			}
 		}
 		// it's a group
 		else if (messageBuffer[0] == 'G') {
 			// check discovered user or group for duplicates
-			int j, isNew = 1;
-			for (j = 0; i < discoveredGroupsNo; ++i) {
+			isNew = 1;
+			for (i = 0; i < discoveredGroupsNo; ++i) {
 				if (strcmp(discoveredGroups[i].name, name) == 0) {
 					isNew = 0;
 					break;
@@ -236,12 +236,14 @@ void answerDiscoveryRequests() {
 			continue;
 		}
 
-		char* answer = strcat("U", myself.name);
+		char answer[1 + strlen(myself.name) + 1];
+		answer[0] = 'U';
+		strcpy(answer + 1, myself.name);
+		clientSocketAddress.sin_port = htons(HELLO_RSP_PORT);
 
 		// it's a discovery request
 		if (strcmp(messageBuffer, DISCOVERY_REQ_MESSAGE) == 0) {
-			sendto(serverSocket, answer,
-					sizeof(messageBuffer), 0,
+			sendto(serverSocket, answer, sizeof(answer), 0,
 					(struct sockaddr*) &clientSocketAddress,
 					clientSocketAddressSize);
 		}

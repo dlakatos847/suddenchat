@@ -22,11 +22,23 @@ int main(int argc, char* argv[]) {
 	printf("Name: ");
 	gets(myself.name);
 
-	// discovery reader thread
-	pthread_t reader;
-	// create and start response collector thread
-	if (pthread_create(&reader, NULL, (void*) collectDiscoveryAnswers, NULL) < 0) {
-		perror("discoverGroups pthread_create");
+	pthread_t discoveryReader;
+	if (pthread_create(&discoveryReader, NULL, (void*) collectDiscoveryAnswers,
+	NULL) < 0) {
+		perror("main pthread_create");
+		exit(-1);
+	}
+
+	pthread_t discoveryResponder;
+	if (pthread_create(&discoveryResponder, NULL,
+			(void*) answerDiscoveryRequests, NULL) < 0) {
+		perror("main pthread_create");
+		exit(-1);
+	}
+
+	pthread_t discoverer;
+	if (pthread_create(&discoverer, NULL, (void*) discover, NULL) < 0) {
+		perror("main pthread_create");
 		exit(-1);
 	}
 
