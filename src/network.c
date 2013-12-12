@@ -8,6 +8,7 @@
 #include "network.h"
 
 #include <arpa/inet.h>
+#include <time.h>
 #include <asm-generic/socket.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -15,29 +16,72 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <stdlib.h>
+#include <pthread.h>
 
 #include "sudden_types.h"
+#include "conversation.h"
+#include "cypher.h"
 
 /*
  * variables
  */
-int associatedUsersNo = 0;
-int associatedGroupsNo = 0;
-struct user associatedUsers[MAX_DISCOVERED_USERS];
-struct group associatedGroups[MAX_DISCOVERED_GROUPS];
-int discoveredUsersNo = 0;
-int discoveredGroupsNo = 0;
-struct user discoveredUsers[MAX_DISCOVERED_USERS];
-struct group discoveredGroups[MAX_DISCOVERED_GROUPS];
+struct group_collection associatedGroups;
 extern struct user myself;
+struct user_collection discoveredUsers;
+struct group_collection discoveredGroups;
 
 /*
  * function declarations
  */
 void collectDiscoveryAnswers();
+void getIpFromSocketAddress(struct sockaddr_in *socketAddress, char *ip);
+struct user* getUserFromIp(char *senderIp);
+void handleFirstMessageFromUser(struct user *user, char *message);
+void cleanDiscoveryStructures();
 
-struct group * listMemberGroups() {
-	return associatedGroups;
+void networkInit() {
+	memset(&discoveredUsers, 0, sizeof(discoveredUsers));
+	memset(&discoveredGroups, 0, sizeof(discoveredGroups));
+	memset(&associatedGroups, 0, sizeof(associatedGroups));
+	pthread_mutex_init(&discoveredUsers.lock, NULL);
+	pthread_mutex_init(&discoveredGroups.lock, NULL);
+
+	discoveredUsers.oldest.younger = &discoveredUsers.youngest;
+	discoveredUsers.youngest.older = &discoveredUsers.oldest;
+	discoveredGroups.oldest.younger = &discoveredGroups.youngest;
+	discoveredGroups.youngest.older = &discoveredGroups.oldest;
+	associatedGroups.oldest.younger = &associatedGroups.youngest;
+	associatedGroups.youngest.older = &associatedGroups.oldest;
+}
+
+void networkDestroy() {
+	pthread_mutex_destroy(&discoveredUsers.lock);
+	pthread_mutex_destroy(&discoveredGroups.lock);
+
+	if (discoveredUsers.entryQuantity > 0) {
+		struct user_collection_entry *uce = discoveredUsers.oldest.younger;
+		while (uce != &discoveredUsers.youngest) {
+			pthread_mutex_destroy(&uce->lock);
+			uce = uce->younger;
+		}
+	}
+
+	if (discoveredGroups.entryQuantity > 0) {
+		struct group_collection_entry *gce = discoveredGroups.oldest.younger;
+		while (gce != &discoveredGroups.youngest) {
+			pthread_mutex_destroy(&gce->lock);
+			gce = gce->younger;
+		}
+	}
+
+	if (associatedGroups.entryQuantity > 0) {
+		struct group_collection_entry *gce = associatedGroups.oldest.younger;
+		while (gce != &associatedGroups.youngest) {
+			pthread_mutex_destroy(&gce->lock);
+			gce = gce->younger;
+		}
+	}
 }
 
 /*
@@ -54,9 +98,6 @@ void discover() {
 	int bcastSocket;
 	// socket address
 	struct sockaddr_in bcastSocketAddress;
-
-	discoveredUsersNo = 0;
-	discoveredGroupsNo = 0;
 
 	// *** initialization
 	// enumerate interfaces
@@ -97,7 +138,7 @@ void discover() {
 						sizeof(bcastSocketAddress));
 			}
 		}
-		sleep(1);
+		sleep(2);
 	}
 	// free memory: linked list
 	freeifaddrs(ifs);
@@ -153,80 +194,188 @@ void collectDiscoveryAnswers() {
 
 		// it's a user
 		if (messageBuffer[0] == 'U') {
-			// check discovered user or group for duplicates
+			pthread_mutex_lock(&discoveredUsers.lock);
+
 			isNew = 1;
-			for (i = 0; i < discoveredUsersNo; ++i) {
-				if (strcmp(discoveredUsers[i].name, name) == 0) {
-					isNew = 0;
-					break;
+
+			// check self echo
+			if (strcmp(name, myself.name) == 0) {
+				pthread_mutex_unlock(&discoveredUsers.lock);
+				continue;
+			}
+
+			// check discovered user for duplicates
+			if (discoveredUsers.entryQuantity > 0) {
+				struct user_collection_entry *uce =
+						discoveredUsers.oldest.younger;
+				while (uce != &discoveredUsers.youngest) {
+					if (strcmp(uce->user.name, name) == 0) {
+						uce->updateTime = time(NULL);
+						isNew = 0;
+						break;
+					}
+					uce = uce->younger;
 				}
 			}
 
 			if (isNew) {
-				strcpy(discoveredUsers[discoveredUsersNo].name, name);
+				struct user_collection_entry *uce = malloc(
+						sizeof(struct user_collection_entry));
+				memset(uce, 0, sizeof(struct user_collection_entry));
+				discoveredUsers.youngest.older->younger = uce;
+				uce->younger = &discoveredUsers.youngest;
+				uce->older = discoveredUsers.youngest.older;
+				discoveredUsers.youngest.older = uce;
+				pthread_mutex_init(&uce->lock, NULL);
+				uce->updateTime = time(NULL);
+				strcpy(uce->user.name, name);
 				inet_ntop(AF_INET, &clientSocketAddress.sin_addr.s_addr,
-						discoveredUsers[discoveredUsersNo].ip, IP_LENGTH);
-				discoveredUsersNo++;
+						uce->user.ip, MAX_IP_LENGTH);
+				discoveredUsers.entryQuantity++;
+				uce->updateTime = time(NULL);
 			}
+
+			pthread_mutex_unlock(&discoveredUsers.lock);
 		}
 		// it's a group
 		else if (messageBuffer[0] == 'G') {
-			// check discovered user or group for duplicates
+			pthread_mutex_lock(&discoveredGroups.lock);
+
 			isNew = 1;
-			for (i = 0; i < discoveredGroupsNo; ++i) {
-				if (strcmp(discoveredGroups[i].name, name) == 0) {
+
+			// check discovered user or group for duplicates
+			struct group_collection_entry *gce = discoveredGroups.oldest.younger;
+			while (gce != &discoveredGroups.youngest) {
+				if (strcmp(gce->group.name, name) == 0) {
+					gce->updateTime = time(NULL);
 					isNew = 0;
 					break;
 				}
+				gce = gce->younger;
 			}
 
 			if (isNew) {
-				strcpy(discoveredGroups[discoveredGroupsNo].name, name);
-				discoveredGroupsNo++;
+				gce = malloc(sizeof(struct user_collection_entry));
+				memset(gce, 0, sizeof(struct user_collection_entry));
+				discoveredGroups.youngest.older->younger = gce;
+				gce->younger = &discoveredGroups.youngest;
+				gce->older = discoveredGroups.youngest.older;
+				discoveredGroups.youngest.older = gce;
+				pthread_mutex_init(&gce->lock, NULL);
+				strcpy(gce->group.name, name);
+				discoveredGroups.entryQuantity++;
+				gce->updateTime = time(NULL);
+				pthread_mutex_init(&gce->lock, NULL);
+				strcpy(gce->group.name, name);
+				discoveredGroups.entryQuantity++;
 			}
-		}
-		// it's ... well, something we don't care about
-		else {
 
+			pthread_mutex_unlock(&discoveredGroups.lock);
 		}
 	}
 }
 
+void cleanDiscoveryStructures() {
+	//!!!
+	return;
+
+	while (1) {
+		pthread_mutex_lock(&discoveredUsers.lock);
+
+		time_t now = time(NULL);
+
+		if (discoveredUsers.entryQuantity > 0) {
+			struct user_collection_entry *uce = discoveredUsers.oldest.younger,
+					*uaux;
+			int outdated = 0;
+			while (uce != &discoveredUsers.youngest) {
+				outdated =
+						((now - uce->updateTime > DISCOVERY_TIMEOUT)
+								&& (uce->user.conv.messageCount == 0)) ? 1 : 0;
+				if (outdated) {
+					// delete discovered user
+					uce->older->younger = uce->younger;
+					uce->younger->older = uce->older;
+					uaux = uce;
+					discoveredUsers.entryQuantity--;
+					pthread_mutex_destroy(&uce->lock);
+				}
+				uce = uce->younger;
+				if (outdated) {
+					free(uaux);
+				}
+			}
+		}
+
+		pthread_mutex_unlock(&discoveredUsers.lock);
+
+		pthread_mutex_lock(&discoveredGroups.lock);
+
+		if (discoveredGroups.entryQuantity > 0) {
+			struct group_collection_entry
+					*gce = discoveredGroups.oldest.younger, *gaux;
+			int outdated = 0;
+			while (gce != NULL) {
+				outdated = (now - gce->updateTime > DISCOVERY_TIMEOUT) ? 1 : 0;
+				if (outdated) {
+					// delete discovered user
+					gce->older->younger = gce->younger;
+					gce->younger->older = gce->older;
+					gaux = gce;
+					discoveredUsers.entryQuantity--;
+					pthread_mutex_destroy(&gce->lock);
+				}
+				gce = gce->younger;
+				if (outdated) {
+					free(gaux);
+				}
+			}
+		}
+
+		pthread_mutex_unlock(&discoveredGroups.lock);
+
+		sleep(1);
+	}
+}
+
+/*
+ * thread function; answers discovery requests
+ */
 void answerDiscoveryRequests() {
 	int serverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	// amount of bytes read
+// amount of bytes read
 	int readBytes;
 	struct sockaddr_in serverSocketAddress;
 	struct sockaddr_in clientSocketAddress;
 	socklen_t clientSocketAddressSize = sizeof(clientSocketAddress);
 	int serverSocketAddressLength = sizeof(serverSocketAddress);
-	// receive group names to this buffer
+// receive group names to this buffer
 	char messageBuffer[DISCOVERY_REQ_LENGTH + 1];
-	// iteration variable
+// iteration variable
 	int i;
 
-	// check if the socket went wrong
+// check if the socket went wrong
 	if (serverSocket < 0) {
 		perror("collectGroups serverSocket");
 		pthread_exit(NULL);
 	}
 
-	// zero out the socket address structure
+// zero out the socket address structure
 	memset((char *) &serverSocketAddress, 0, sizeof(serverSocketAddress));
 
-	// initialize the socket address
+// initialize the socket address
 	serverSocketAddress.sin_family = AF_INET;
 	serverSocketAddress.sin_port = htons(HELLO_REQ_PORT);
 	serverSocketAddress.sin_addr.s_addr = htonl(INADDR_ANY);
 
-	//bind socket to port
+//bind socket to port
 	if (bind(serverSocket, (struct sockaddr*) &serverSocketAddress,
 			sizeof(serverSocketAddress)) == -1) {
 		perror("bind");
 		pthread_exit(NULL);
 	}
 
-	// answer discovery requests
+// answer discovery requests
 	while (1) {
 		if ((readBytes = recvfrom(serverSocket, messageBuffer,
 				sizeof(messageBuffer), 0,
@@ -236,65 +385,231 @@ void answerDiscoveryRequests() {
 			continue;
 		}
 
-		char answer[1 + strlen(myself.name) + 1];
-		answer[0] = 'U';
-		strcpy(answer + 1, myself.name);
-		clientSocketAddress.sin_port = htons(HELLO_RSP_PORT);
-
-		// it's a discovery request
+// it's a discovery request
 		if (strcmp(messageBuffer, DISCOVERY_REQ_MESSAGE) == 0) {
-			sendto(serverSocket, answer, sizeof(answer), 0,
+			int i;
+			char userNameAnswer[MAX_USERNAME_LENGTH];
+			userNameAnswer[0] = 'U';
+			strcpy(userNameAnswer + 1, myself.name);
+			clientSocketAddress.sin_port = htons(HELLO_RSP_PORT);
+
+			sendto(serverSocket, userNameAnswer, sizeof(userNameAnswer), 0,
 					(struct sockaddr*) &clientSocketAddress,
 					clientSocketAddressSize);
+
+			pthread_mutex_lock(&discoveredGroups.lock);
+
+			if (associatedGroups.entryQuantity > 0) {
+				char groupNameAnswer[MAX_GROUPNAME_LENGTH];
+				groupNameAnswer[0] = 'G';
+				struct group_collection_entry *gce =
+						associatedGroups.oldest.younger;
+				while (gce != &associatedGroups.youngest) {
+					strcpy(groupNameAnswer + 1, gce->group.name);
+					sendto(serverSocket, groupNameAnswer,
+							sizeof(groupNameAnswer), 0,
+							(struct sockaddr*) &clientSocketAddress,
+							clientSocketAddressSize);
+					gce = gce->younger;
+				}
+			}
+
+			pthread_mutex_unlock(&discoveredGroups.lock);
+		}
+// protocol error
+		else {
+			perror("answerDiscoveryRequests protocol error");
 		}
 	}
+}
+
+/*
+ * tread function; receives messages
+ */
+void receiveMessages() {
+	int serverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+// amount of bytes read
+	int readBytes;
+	struct sockaddr_in serverSocketAddress;
+	struct sockaddr_in clientSocketAddress;
+	socklen_t clientSocketAddressSize = sizeof(clientSocketAddress);
+	int serverSocketAddressLength = sizeof(serverSocketAddress);
+// receive group names to this buffer
+	char messageBuffer[MAX_MESSAGE_LENGTH + 1];
+// iteration variable
+	int i;
+	struct user *user;
+	char senderIp[MAX_IP_LENGTH + 1];
+
+// check if the socket went wrong
+	if (serverSocket < 0) {
+		perror("receiveMessages serverSocket");
+		pthread_exit(NULL);
+	}
+
+// zero out the socket address structure
+	memset((char *) &serverSocketAddress, 0, sizeof(serverSocketAddress));
+
+// initialize the socket address
+	serverSocketAddress.sin_family = AF_INET;
+	serverSocketAddress.sin_port = htons(MESSAGE_PORT);
+	serverSocketAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+
+//bind socket to port
+	if (bind(serverSocket, (struct sockaddr*) &serverSocketAddress,
+			sizeof(serverSocketAddress)) == -1) {
+		perror("receiveMessages bind");
+		pthread_exit(NULL);
+	}
+
+	while (1) {
+		if ((readBytes = recvfrom(serverSocket, messageBuffer,
+				sizeof(messageBuffer), 0,
+				(struct sockaddr *) &clientSocketAddress,
+				&serverSocketAddressLength)) < 0) {
+			perror("receiveMessages recvfrom");
+			continue;
+		}
+
+		getIpFromSocketAddress(&clientSocketAddress, senderIp);
+
+		if ((user = getUserFromIp(senderIp)) == NULL) {
+			continue;
+		}
+
+// user chat
+		if (messageBuffer[0] == 'U') {
+			addUserConversationElement(user, &myself, messageBuffer + 1);
+		}
+// group chat
+		else if (messageBuffer[0] == 'G') {
+			char *message = messageBuffer + 1;
+			char *groupName;
+			char *cypheredText;
+			char clearTextMessage[MAX_CYPHERED_TEXT_MESSAGE_LENGTH];
+			struct group *group = NULL;
+
+			groupName = message;
+			cypheredText = groupName;
+			while (cypheredText[-1] != '|') {
+				cypheredText += 1;
+			}
+			cypheredText[-1] = 0;
+
+			struct group_collection_entry *gce = associatedGroups.oldest.younger;
+			while (gce != NULL) {
+				if (strcmp(gce->group.name, groupName) == 0) {
+					group = &gce->group;
+					break;
+				}
+				gce = gce->younger;
+			}
+
+			if (group != NULL) {
+				decode(cypheredText, group->password, clearTextMessage);
+				addGroupConversationElement(user, group, clearTextMessage);
+			}
+		}
+// protocol error
+		else {
+			perror("receiveMessages protocol error");
+			continue;
+		}
+	}
+}
+
+void getIpFromSocketAddress(struct sockaddr_in *socketAddress, char *ip) {
+	inet_ntop(AF_INET, &socketAddress->sin_addr.s_addr, ip, MAX_IP_LENGTH);
+}
+
+struct user* getUserFromIp(char *senderIp) {
+	struct user *user;
+	int i;
+
+	struct user_collection_entry *uce = discoveredUsers.oldest.younger;
+	while (uce != NULL) {
+		if (strcmp(uce->user.ip, senderIp) == 0) {
+			return &uce->user;
+		}
+	}
+
+	return NULL;
+}
+
+void handleFirstMessageFromUser(struct user *user, char *message) {
+	struct conversation_element *newElement =
+			(struct conversation_element *) malloc(
+					sizeof(struct conversation_element));
+	memset(newElement, 0, sizeof(struct conversation_element));
+	strcpy(newElement->message, message);
+	user->conv.first = user->conv.last = newElement;
+	user->conv.messageCount = 1;
 }
 
 int getMaximumGroupsNo() {
 	return sizeof(associatedGroups) / sizeof(struct group);
 }
 
-int getMemberGroupsNo() {
-	return associatedGroupsNo;
-}
-
 void joinGroup(char *groupName, char *password) {
-// check the maximum group memberships
-	if (associatedGroupsNo == sizeof(associatedGroups) / sizeof(struct group)) {
-		printf("You reached the maximum group membership number (%d).",
-				(int) (sizeof(associatedGroups) / sizeof(struct group)));
-		return;
-	}
-
-// look up existing group membership
-	int i;
+	// look up existing group membership
 	int alreadyMember = 0;
-	for (i = 0; i < associatedGroupsNo; ++i) {
-		if (strcmp(associatedGroups[i].name, groupName) == 0) {
-			strcpy(associatedGroups[i].password, password);
-			alreadyMember = 1;
+	struct group_collection_entry *gce = associatedGroups.oldest.younger;
+	if (associatedGroups.entryQuantity > 0) {
+		while (gce != &associatedGroups.youngest) {
+			if (strcmp(gce->group.name, groupName) == 0) {
+				strcpy(gce->group.password, password);
+				alreadyMember = 1;
+				break;
+			}
+			gce = gce->younger;
 		}
 	}
 
-// if not a member of the group, add them to it
+	// if not a member of the group, add them to it
 	if (alreadyMember == 0) {
-		strcpy(associatedGroups[associatedGroupsNo].name, groupName);
-		strcpy(associatedGroups[associatedGroupsNo].password, password);
-		associatedGroupsNo++;
+		gce = malloc(sizeof(struct group_collection_entry));
+
+		associatedGroups.youngest.older->younger = gce;
+		gce->younger = &associatedGroups.youngest;
+		gce->older = associatedGroups.youngest.older;
+		associatedGroups.youngest.older = gce;
+		associatedGroups.entryQuantity++;
+		strcpy(gce->group.name, groupName);
+		strcpy(gce->group.password, password);
+		pthread_mutex_init(&gce->lock, NULL);
+	}
+}
+
+void leaveGroup(char *groupName) {
+	// look up existing group membership
+	int alreadyMember = 0;
+	struct group_collection_entry *gce = associatedGroups.oldest.younger;
+	while (gce != NULL) {
+		if (strcmp(gce->group.name, groupName) == 0) {
+			gce->older->younger = gce->younger;
+			gce->younger->older = gce->older;
+			associatedGroups.entryQuantity--;
+			free(gce);
+			break;
+		}
+		gce = gce->younger;
 	}
 }
 
 /*
  * send a message to the user
  */
-void sendMessageToPerson(char *message, int messageLength, char *username) {
+void sendMessageToPerson(char *message, struct user *user) {
+	char realMessage[strlen(message) + 1];
+	int realMessageLength = 1 + strlen(message) + 1;
+	realMessage[0] = 'U';
+	strcpy(realMessage + 1, message);
+	realMessage[realMessageLength] = 0;
+
 // the socket
 	int senderSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 // the socket address
 	struct sockaddr_in senderSocketAddress;
-
-//TODO
-	char *ip;
 
 // quit if the socket has problems
 	if (senderSocket < 0) {
@@ -305,18 +620,79 @@ void sendMessageToPerson(char *message, int messageLength, char *username) {
 //set socket address
 	senderSocketAddress.sin_family = AF_INET;
 	senderSocketAddress.sin_port = htons(MESSAGE_PORT);
-	if (inet_aton(ip, &senderSocketAddress.sin_addr) == 0) {
+	if (inet_aton(user->ip, &senderSocketAddress.sin_addr) == 0) {
 		perror("sendMessageToPerson inet_aton");
 		return;
 	}
 
 // send the message
-	sendto(senderSocket, message, messageLength, 0,
+	sendto(senderSocket, realMessage, realMessageLength, 0,
 			(struct sockaddr*) &senderSocketAddress,
 			sizeof(senderSocketAddress));
 }
 
-//TODO
-void sendMessageToGroup(char *message, char *groupName) {
-	return;
+void sendMessageToGroup(char *message, struct group *group) {
+	char cypheredMessage[strlen(message) + 1];
+	char finalMessage[1 + strlen(group->name) + 1 + strlen(message) + 1];
+	char *var = finalMessage;
+	var[0] = 'G';
+	var += 1;
+	strcpy(var, group->name);
+	var += strlen(group->name);
+	var[0] = '|';
+	var += 1;
+	encode(message, group->password, cypheredMessage);
+	strcpy(var, cypheredMessage);
+
+// interface linked list
+	struct ifaddrs *ifs;
+// current interface
+	struct ifaddrs *cif;
+// bcast enable bit
+	int broadcastEnable = 1;
+// socket
+	int bcastSocket;
+// socket address
+	struct sockaddr_in bcastSocketAddress;
+
+// *** initialization
+// enumerate interfaces
+	if (getifaddrs(&ifs) != 0) {
+		perror("getifaddrs");
+		return;
+	}
+// initialize socket
+	if ((bcastSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
+		perror("discoverGroups bcastsocket");
+		return;
+	}
+	if (setsockopt(bcastSocket, SOL_SOCKET, SO_BROADCAST, &broadcastEnable,
+			sizeof(broadcastEnable)) < 0) {
+		perror("discoverGroups setsockopt");
+		return;
+	}
+
+	for (cif = ifs; cif != NULL; cif = cif->ifa_next) {
+// avoid loopback interfaces
+		if (strcmp(cif->ifa_name, "lo") == 0) {
+			continue;
+		}
+
+// only IPv4
+		if (cif->ifa_addr->sa_family == AF_INET) {
+			// get socket address to broadcast
+			memcpy(&bcastSocketAddress,
+					(struct sockaddr_in *) cif->ifa_ifu.ifu_broadaddr,
+					sizeof(*(cif->ifa_ifu.ifu_broadaddr)));
+			// set message port
+			bcastSocketAddress.sin_port = htons(MESSAGE_PORT);
+			// send message
+			sendto(bcastSocket, (char*) finalMessage,
+					strlen((char*) finalMessage), 0,
+					(struct sockaddr *) &bcastSocketAddress,
+					sizeof(bcastSocketAddress));
+		}
+	}
+// free memory: linked list
+	freeifaddrs(ifs);
 }

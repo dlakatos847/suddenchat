@@ -19,6 +19,8 @@ struct user myself;
 int main(int argc, char* argv[]) {
 	printf("SuddenChat started\n");
 
+	networkInit();
+
 	printf("Name: ");
 	gets(myself.name);
 
@@ -42,8 +44,24 @@ int main(int argc, char* argv[]) {
 		exit(-1);
 	}
 
+	pthread_t messageReceiver;
+	if (pthread_create(&messageReceiver, NULL, (void*) receiveMessages, NULL)
+			< 0) {
+		perror("main pthread_create");
+		exit(-1);
+	}
+
+	pthread_t discoveryCleaner;
+	if (pthread_create(&discoveryCleaner, NULL, (void*) cleanDiscoveryStructures, NULL)
+			< 0) {
+		perror("main pthread_create");
+		exit(-1);
+	}
+
 	// show CLI
 	showConsole();
+
+	networkDestroy();
 
 	printf("SuddenChat stopped with error code %d\n", errno);
 	return 0;
