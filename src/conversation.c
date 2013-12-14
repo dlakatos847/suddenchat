@@ -21,6 +21,7 @@ void addUserConversationElement(struct user *src, struct user *dst,
 	struct user *user = (src == &myself ? dst : src);
 	struct conversation *conv = &(user->conv);
 	time_t now = time(0);
+	struct tm* tm_now = localtime(&now);
 
 	pthread_mutex_lock(&conv->lock);
 
@@ -31,7 +32,7 @@ void addUserConversationElement(struct user *src, struct user *dst,
 	strcpy(newElement->message, message);
 	newElement->src = src;
 	newElement->dstUser = dst;
-	memcpy(&newElement->timestamp, localtime(&now), sizeof(struct tm));
+	memcpy(&newElement->timestamp, tm_now, sizeof(struct tm));
 
 	// if first message
 	if (conv->last == NULL) {
@@ -67,6 +68,11 @@ void addGroupConversationElement(struct user *src, struct group *dst,
 	struct conversation *conv = &(dst->conv);
 	time_t now = time(0);
 
+	// check if it's a duplicate
+	if (conv->last != NULL && strcmp(message, conv->last->message) == 0) {
+		return;
+	}
+
 	pthread_mutex_lock(&conv->lock);
 
 	struct conversation_element *newElement =
@@ -88,7 +94,7 @@ void addGroupConversationElement(struct user *src, struct group *dst,
 	// otherwise
 	else {
 		// network duplicate
-		if (strcmp(conv->last->message, message) != 0) {
+		if (strcmp(conv->last->message, message) == 0) {
 			pthread_mutex_unlock(&conv->lock);
 			return;
 		}

@@ -103,17 +103,17 @@ void discover() {
 	// enumerate interfaces
 	if (getifaddrs(&ifs) != 0) {
 		perror("getifaddrs");
-		return;
+		exit(-1);
 	}
 	// initialize socket
 	if ((bcastSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
 		perror("discoverGroups bcastsocket");
-		return;
+		exit(-1);
 	}
 	if (setsockopt(bcastSocket, SOL_SOCKET, SO_BROADCAST, &broadcastEnable,
 			sizeof(broadcastEnable)) < 0) {
 		perror("discoverGroups setsockopt");
-		return;
+		exit(-1);
 	}
 
 	while (1) {
@@ -200,8 +200,7 @@ void collectDiscoveryAnswers() {
 
 			// check self echo
 			if (strcmp(name, myself.name) == 0) {
-				pthread_mutex_unlock(&discoveredUsers.lock);
-				continue;
+				isNew = 0;
 			}
 
 			// check discovered user for duplicates
@@ -459,7 +458,7 @@ void receiveMessages() {
 	if (bind(serverSocket, (struct sockaddr*) &serverSocketAddress,
 			sizeof(serverSocketAddress)) == -1) {
 		perror("receiveMessages bind");
-		pthread_exit(NULL);
+		exit(-1);
 	}
 
 	while (1) {
@@ -523,17 +522,22 @@ void getIpFromSocketAddress(struct sockaddr_in *socketAddress, char *ip) {
 }
 
 struct user* getUserFromIp(char *senderIp) {
-	struct user *user;
+	struct user *user = NULL;
 	int i;
 
+	pthread_mutex_lock(&discoveredUsers.lock);
+
 	struct user_collection_entry *uce = discoveredUsers.oldest.younger;
-	while (uce != NULL) {
+	while (uce != &discoveredUsers.youngest) {
 		if (strcmp(uce->user.ip, senderIp) == 0) {
-			return &uce->user;
+			user = &uce->user;
 		}
+		uce = uce->younger;
 	}
 
-	return NULL;
+	pthread_mutex_unlock(&discoveredUsers.lock);
+
+	return user;
 }
 
 void handleFirstMessageFromUser(struct user *user, char *message) {

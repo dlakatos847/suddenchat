@@ -34,6 +34,7 @@ struct conversation_element {
 	struct conversation_element *next;
 	struct conversation_element *prev;
 	struct tm timestamp;
+	int isUnread;
 };
 
 struct conversation {

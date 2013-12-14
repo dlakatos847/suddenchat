@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "network.h"
 #include "sudden_types.h"
@@ -86,7 +87,8 @@ void showOptions() {
 	printf("j - join a group\n");
 	printf("g - show group memberships\n");
 	printf("l - list available users and groups\n");
-	printf("q - quit\n");
+	printf("q - quit\n\n");
+	showUnreadMessages();
 }
 
 void listGroupMemberships() {
@@ -113,14 +115,16 @@ void listCandidates() {
 void listUsers() {
 	pthread_mutex_lock(&discoveredUsers.lock);
 
-	printf("Users:\n");
 	if (discoveredUsers.entryQuantity > 0) {
+		printf("Users:\n");
 		struct user_collection_entry *uce = discoveredUsers.oldest.younger;
 		while (uce != &discoveredUsers.youngest) {
 			printf(" # %-10s ", uce->user.name);
 			printf("\t\t%s\n", uce->user.ip);
 			uce = uce->younger;
 		}
+	} else {
+		printf("No user is on Suddenchat right now... Come back later!\n");
 	}
 
 	pthread_mutex_unlock(&discoveredUsers.lock);
@@ -129,13 +133,15 @@ void listUsers() {
 void listGroups() {
 	pthread_mutex_lock(&discoveredGroups.lock);
 
-	printf("Groups:\n");
 	if (discoveredGroups.entryQuantity > 0) {
+		printf("Groups:\n");
 		struct group_collection_entry *gce = discoveredGroups.oldest.younger;
 		while (gce != &discoveredGroups.youngest) {
 			printf(" # %s\n", gce->group.name);
 			gce = gce->younger;
 		}
+	} else {
+		printf("No group has been created so far\n");
 	}
 
 	pthread_mutex_unlock(&discoveredGroups.lock);
@@ -153,7 +159,7 @@ void chatWithUser() {
 		listUsers();
 
 		gets(username);
-		while (uce != NULL) {
+		while (uce != &discoveredUsers.oldest) {
 			if (strcmp(username, uce->user.name) == 0) {
 				user = &uce->user;
 				break;
@@ -171,17 +177,30 @@ void chatWithUser() {
 		inChatWindow = 1;
 
 		struct conversation *conv = &(user->conv);
+
+		pthread_mutex_lock(&conv->lock);
 		struct conversation_element *ce = user->conv.first;
 		if (ce != NULL) {
-			printf("History:\n");
+			if (!ce->isUnread) {
+				printf("History:\n");
+			} else {
+				printf("Unread messages:\n");
+			}
+
 			while (ce != NULL) {
 				char time[20];
 				strftime(time, sizeof(time), "%H:%M", &ce->timestamp);
+				if (ce->prev != NULL && ce->prev->isUnread == 0
+						&& ce->isUnread == 1) {
+					printf("Unread messages:\n");
+				}
 				printf("[%s %s]: %s\n", time, ce->src->name, ce->message);
+				ce->isUnread = 0;
 				ce = ce->next;
 			}
 			conv->unreadMessage = 0;
 		}
+		pthread_mutex_unlock(&conv->lock);
 
 		pthread_t chatWindowRefresher;
 		if (pthread_create(&chatWindowRefresher, NULL,
@@ -197,7 +216,6 @@ void chatWithUser() {
 			if (strcmp(message, "\\q") == 0) {
 				inChatWindow = 0;
 				activeChatBuddy = NULL;
-				showUnreadMessages();
 			} else {
 				addUserConversationElement(&myself, user, message);
 				sendMessageToPerson(message, user);
@@ -220,6 +238,7 @@ void chatWithGroup() {
 		listGroups();
 
 		gets(groupname);
+		pthread_mutex_lock(&discoveredGroups.lock);
 		while (gce != &discoveredGroups.youngest) {
 			if (strcmp(groupname, gce->group.name) == 0) {
 				group = &gce->group;
@@ -227,6 +246,7 @@ void chatWithGroup() {
 			}
 			gce = gce->younger;
 		}
+		pthread_mutex_unlock(&discoveredGroups.lock);
 
 		if (group == NULL) {
 			printf("The group %s does not exist", groupname);
@@ -234,6 +254,7 @@ void chatWithGroup() {
 		}
 
 		group = NULL;
+		pthread_mutex_lock(&associatedGroups.lock);
 		gce = associatedGroups.oldest.younger;
 		while (gce != &associatedGroups.youngest) {
 			if (strcmp(groupname, gce->group.name) == 0) {
@@ -242,12 +263,14 @@ void chatWithGroup() {
 			}
 			gce = gce->younger;
 		}
+		pthread_mutex_unlock(&associatedGroups.lock);
 
 		if (group == NULL) {
 			printf("Missing password\n");
 			return;
 		}
 
+		activeChatGroup = group;
 		inChatWindow = 1;
 
 		struct conversation *conv = &(group->conv);
@@ -268,7 +291,7 @@ void chatWithGroup() {
 		if (pthread_create(&chatWindowRefresher, NULL,
 				(void*) refreshChatWindow, conv) < 0) {
 			perror("main pthread_create");
-			return;
+			exit(-1);
 		}
 
 		printf("Exit character is \\q\n");
@@ -310,7 +333,7 @@ void refreshChatWindow(struct conversation *conv) {
 					ce->message);
 			conv->unreadMessage = 0;
 
-			pthread_mutex_lock(&conv->lock);
+			pthread_mutex_unlock(&conv->lock);
 		}
 	}
 }
@@ -336,23 +359,32 @@ void showIncomingMessageNotificationToGroup(struct group *group) {
 }
 
 void showUnreadMessages() {
+
 	if (discoveredUsers.entryQuantity > 0) {
+		pthread_mutex_lock(&discoveredUsers.lock);
 		struct user_collection_entry *uce = discoveredUsers.oldest.younger;
-		while (uce != NULL) {
+		while (uce != &discoveredUsers.youngest) {
+			pthread_mutex_lock(&uce->lock);
 			if (uce->user.conv.unreadMessage > 0) {
 				showIncomingMessageNotificationFromUser(&uce->user);
 			}
+			pthread_mutex_unlock(&uce->lock);
 			uce = uce->younger;
 		}
+		pthread_mutex_unlock(&discoveredUsers.lock);
 	}
 
 	if (discoveredGroups.entryQuantity > 0) {
+		pthread_mutex_lock(&discoveredGroups.lock);
 		struct group_collection_entry *gce = discoveredGroups.oldest.younger;
 		while (gce != NULL) {
+			pthread_mutex_lock(&gce->lock);
 			if (gce->group.conv.unreadMessage > 0) {
 				showIncomingMessageNotificationToGroup(&gce->group);
 			}
+			pthread_mutex_unlock(&gce->lock);
 			gce = gce->younger;
 		}
+		pthread_mutex_unlock(&discoveredGroups.lock);
 	}
 }
